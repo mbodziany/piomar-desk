@@ -32,7 +32,7 @@ jobs:
           flutter doctor -v
 
       - name: Install LLVM
-        run: choco install -y llvm --version=15.0.7
+        run: echo "LLVM already installed"
 
       - name: Patch rendezvous server
         shell: pwsh
