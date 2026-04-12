@@ -48,10 +48,10 @@ jobs:
         shell: pwsh
         run: |
           $configPath = "libs/hbb_common/src/config.rs"
-          (Get-Content $configPath) `
-            -replace 'pub const RS_PUB_KEY.*', 'pub const RS_PUB_KEY: &'\''static str = "${{ secrets.DEFAULT_RS_PUB_KEY }}";' | `
-          Set-Content $configPath
-
+          $content = Get-Content $configPath -Raw
+          $newLine = 'pub const RS_PUB_KEY: &' + "'" + 'static str = "${{ secrets.DEFAULT_RS_PUB_KEY }}";'
+          $content = $content -replace 'pub const RS_PUB_KEY.*', $newLine
+          Set-Content $configPath $content
       - name: Build
         run: |
           flutter pub get
