@@ -176,6 +176,7 @@ jobs:
           Set-Content $configPath $content
 
       - name: Build rustdesk
+        run: |
           python3 .\build.py --portable --hwcodec --flutter --vram --skip-portable-pack
           mv ./flutter/build/windows/x64/runner/Release ./rustdesk
 
