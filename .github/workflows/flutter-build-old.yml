@@ -163,19 +163,9 @@ jobs:
           head -n 100 "${VCPKG_ROOT}/buildtrees/ffmpeg/build-${{ matrix.job.vcpkg-triplet }}-rel-out.log" || true
         shell: bash
 
-      - name: Patch rendezvous server and public key
-        shell: pwsh
-        run: |
-          $configPath = "libs/hbb_common/src/config.rs"
-          $content = Get-Content $configPath -Raw
-          $content = $content -replace 'rs-ny\.rustdesk\.com', '${{ secrets.DEFAULT_RENDEZVOUS_SERVER }}'
-          $content = $content -replace 'rs-sg\.rustdesk\.com', '${{ secrets.DEFAULT_RENDEZVOUS_SERVER }}'
-          $content = $content -replace 'rs-cn\.rustdesk\.com', '${{ secrets.DEFAULT_RENDEZVOUS_SERVER }}'
-          $newKey = 'pub const RS_PUB_KEY: &' + "'" + 'static str = "${{ secrets.DEFAULT_RS_PUB_KEY }}";'
-          $content = $content -replace 'pub const RS_PUB_KEY:.*', $newKey
-          Set-Content $configPath $content
-
       - name: Build rustdesk
+        run: |
+          # Windows: build RustDesk
           python3 .\build.py --portable --hwcodec --flutter --vram --skip-portable-pack
           mv ./flutter/build/windows/x64/runner/Release ./rustdesk
 
@@ -295,7 +285,8 @@ jobs:
   build-for-windows-sciter:
     name: ${{ matrix.job.target }} (${{ matrix.job.os }})
     runs-on: ${{ matrix.job.os }}
-    if: false
+    # Temporarily disable this action due to additional test is needed.
+    # if: false
     strategy:
       fail-fast: false
       matrix:
@@ -442,7 +433,7 @@ jobs:
             ./SignOutput/rustdesk-*.exe
 
   build-rustdesk-ios:
-    if: false
+    if: ${{ inputs.upload-artifact }}
     name: build rustdesk ios ipa
     runs-on: ${{ matrix.job.os }}
     needs: [generate-bridge]
@@ -576,7 +567,14 @@ jobs:
               arch: x86_64,
               vcpkg-triplet: x64-osx,
             }
-        
+          - {
+              target: aarch64-apple-darwin,
+              os: macos-14,
+              # extra-build-args: "--disable-flutter-texture-render", # disable this for mac, because we see a lot of users reporting flickering both on arm and x64, and we can not confirm if texture rendering has better performance if htere is no vram, https://github.com/rustdesk/rustdesk/issues/6296
+              extra-build-args: "--screencapturekit",
+              arch: aarch64,
+              vcpkg-triplet: arm64-osx,
+            }
     steps:
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@v6
@@ -774,9 +772,11 @@ jobs:
 
   publish_unsigned:
     needs:
+      - build-for-macOS
       - build-for-windows-flutter
+      - build-for-windows-sciter
     runs-on: ubuntu-latest
-    if: false
+    if: ${{ inputs.upload-artifact }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@master
@@ -817,7 +817,6 @@ jobs:
     needs: [generate-bridge]
     name: build rustdesk android apk ${{ matrix.job.target }}
     runs-on: ${{ matrix.job.os }}
-    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -1292,7 +1291,6 @@ jobs:
 
   build-rustdesk-linux:
     needs: [generate-bridge]
-    if: false
     name: build rustdesk linux ${{ matrix.job.target }}
     runs-on: ${{ matrix.job.on }}
     strategy:
@@ -1629,7 +1627,7 @@ jobs:
             res/rustdesk-${{ env.VERSION }}*.zst
 
   build-rustdesk-linux-sciter:
-    if: false
+    if: ${{ inputs.upload-artifact }}
     runs-on: ${{ matrix.job.on }}
     name: build-rustdesk-linux-sciter ${{ matrix.job.target }}
     strategy:
@@ -1859,7 +1857,7 @@ jobs:
     name: Build appimage ${{ matrix.job.target }}
     needs: [build-rustdesk-linux]
     runs-on: ubuntu-22.04
-    if: false
+    if: ${{ inputs.upload-artifact }}
     strategy:
       fail-fast: false
       matrix:
@@ -1911,7 +1909,7 @@ jobs:
       - build-rustdesk-linux
       - build-rustdesk-linux-sciter
     runs-on: ${{ matrix.job.on }}
-    if: false
+    if: ${{ inputs.upload-artifact }}
     strategy:
       fail-fast: false
       matrix:
