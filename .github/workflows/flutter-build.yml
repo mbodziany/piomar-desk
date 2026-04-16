@@ -741,17 +741,17 @@ jobs:
 
       - name: Ad-hoc sign app
         if: env.UPLOAD_ARTIFACT == 'true'
-         run: |
-        find flutter/build/macos/Build/Products/Release/RustDesk.app \
-          -name "*.framework" -o -name "*.dylib" | while read f; do
-          codesign --remove-signature "$f" 2>/dev/null || true
-        done
-        codesign --force --deep --sign - \
-          flutter/build/macos/Build/Products/Release/RustDesk.app
+        run: |
+          find flutter/build/macos/Build/Products/Release/RustDesk.app \
+            -name "*.framework" -o -name "*.dylib" | while read f; do
+            codesign --remove-signature "$f" 2>/dev/null || true
+          done
+          codesign --force --deep --sign - \
+            flutter/build/macos/Build/Products/Release/RustDesk.app
 
-    - name: create unsigned dmg
-      if: env.UPLOAD_ARTIFACT == 'true'
-      run: |
+      - name: create unsigned dmg
+        if: env.UPLOAD_ARTIFACT == 'true'
+        run: |
           CREATE_DMG="$(command -v create-dmg)"
           CREATE_DMG="$(readlink -f "$CREATE_DMG")"
           sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
