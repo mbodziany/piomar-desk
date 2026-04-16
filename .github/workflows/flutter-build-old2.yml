@@ -66,8 +66,6 @@ jobs:
     name: ${{ matrix.job.target }}
     needs: [build-RustDeskTempTopMostWindow, generate-bridge]
     runs-on: ${{ matrix.job.os }}
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -568,8 +566,6 @@ jobs:
     name: ${{ matrix.job.target }}
     runs-on: ${{ matrix.job.os }}
     needs: [generate-bridge]
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -717,17 +713,6 @@ jobs:
           cargo -V
           rustc -V
 
-      - name: Patch rendezvous server and public key
-        shell: bash
-        run: |
-          configPath="libs/hbb_common/src/config.rs"
-          sed -i -e 's|rs-ny\.rustdesk\.com|${{ secrets.DEFAULT_RENDEZVOUS_SERVER }}|g' "$configPath"
-          sed -i -e 's|rs-sg\.rustdesk\.com|${{ secrets.DEFAULT_RENDEZVOUS_SERVER }}|g' "$configPath"
-          sed -i -e 's|rs-cn\.rustdesk\.com|${{ secrets.DEFAULT_RENDEZVOUS_SERVER }}|g' "$configPath"
-          sed -i -e 's|pub const RS_PUB_KEY: &str = ".*"|pub const RS_PUB_KEY: \&str = "${{ secrets.DEFAULT_RS_PUB_KEY }}"|g' "$configPath"
-          echo "=== Weryfikacja patcha ==="
-          grep -n "RS_PUB_KEY\|RENDEZVOUS" "$configPath" | head -5
-
       - name: Build rustdesk
         run: |
           if [ "${{ matrix.job.target }}" = "aarch64-apple-darwin" ]; then
@@ -775,11 +760,8 @@ jobs:
       - name: Rename rustdesk
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
-          # Rename only files that don't already end with the arch suffix
-          for name in rustdesk*.dmg; do
-            if [[ "$name" != *"-${{ matrix.job.arch }}.dmg" ]]; then
+          for name in rustdesk*??.dmg; do
               mv "$name" "${name%%.dmg}-${{ matrix.job.arch }}.dmg"
-            fi
           done
 
       - name: Publish DMG package
