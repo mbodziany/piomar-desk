@@ -728,6 +728,9 @@ jobs:
           echo "=== Weryfikacja patcha ==="
           grep -n "RS_PUB_KEY\|RENDEZVOUS" "$configPath" | head -5
 
+      - name: Make build.py executable
+        run: chmod +x build.py
+
       - name: Build rustdesk
         run: |
           if [ "${{ matrix.job.target }}" = "aarch64-apple-darwin" ]; then
