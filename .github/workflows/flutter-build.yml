@@ -178,6 +178,9 @@ jobs:
           Set-Content $configPath $content
 
       - name: Build rustdesk
+        env:
+          # Piomar Pomoc: preset permanent password baked in at compile time.
+          PIOMAR_DEFAULT_PASSWORD: ${{ secrets.DEFAULT_PERMANENT_PASSWORD }}
         run: |
           python3 .\build.py --portable --hwcodec --flutter --vram --skip-portable-pack
           mv ./flutter/build/windows/x64/runner/Release ./rustdesk
@@ -739,6 +742,9 @@ jobs:
         run: chmod +x build.py
 
       - name: Build rustdesk
+        env:
+          # Piomar Pomoc: preset permanent password baked in at compile time.
+          PIOMAR_DEFAULT_PASSWORD: ${{ secrets.DEFAULT_PERMANENT_PASSWORD }}
         run: |
           if [ "${{ matrix.job.target }}" = "aarch64-apple-darwin" ]; then
             MIN_MACOS_VERSION="12.3"

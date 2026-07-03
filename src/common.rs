@@ -2082,6 +2082,11 @@ pub fn rustdesk_interval(i: Interval) -> ThrottledInterval {
 }
 
 pub fn load_custom_client() {
+    // Piomar Pomoc: apply our compile-time baked-in defaults first, so every
+    // build is locked down even without a signed custom-client file. A signed
+    // `custom.txt`, if present, is applied afterwards and takes precedence.
+    apply_piomar_builtin_config();
+
     #[cfg(debug_assertions)]
     if let Ok(data) = std::fs::read_to_string("./custom.txt") {
         read_custom_client(data.trim());
@@ -2193,13 +2198,21 @@ pub fn read_custom_client(config: &str) {
         log::error!("Failed to dec custom client config");
         return;
     };
-    let Ok(mut data) =
+    let Ok(data) =
         serde_json::from_slice::<std::collections::HashMap<String, serde_json::Value>>(&data)
     else {
         log::error!("Failed to parse custom client config");
         return;
     };
 
+    apply_custom_client_config(data);
+}
+
+// Applies a parsed custom-client config map: `app-name`, `default-settings`,
+// `override-settings`, and any remaining top-level keys (e.g. `password`) which
+// become hard settings. Shared by `read_custom_client` (RustDesk's signed file)
+// and `apply_piomar_builtin_config` (our compile-time defaults).
+fn apply_custom_client_config(mut data: std::collections::HashMap<String, serde_json::Value>) {
     if let Some(app_name) = data.remove("app-name") {
         if let Some(app_name) = app_name.as_str() {
             *config::APP_NAME.write().unwrap() = app_name.to_owned();
@@ -2250,6 +2263,59 @@ pub fn read_custom_client(config: &str) {
                 .insert(k, v.to_owned());
         };
     }
+}
+
+// Piomar Pomoc: defaults baked into every build at compile time, without needing
+// RustDesk's paid signed custom-client file. Values come from environment
+// variables read at build time (set by CI from GitHub secrets); unset/empty
+// values are skipped so nothing is forced when building without them.
+//
+// This provides:
+//   * a preset permanent password (fallback used only when the host has no
+//     locally-set permanent password), from `PIOMAR_DEFAULT_PASSWORD`;
+//   * auto-update disabled, so end users can never pull an upstream RustDesk
+//     build that would silently replace ours;
+//   * a simplified UI with the network/server plumbing sections hidden.
+pub fn apply_piomar_builtin_config() {
+    let mut data: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+
+    if let Some(password) = option_env!("PIOMAR_DEFAULT_PASSWORD") {
+        if !password.is_empty() {
+            data.insert(
+                "password".to_string(),
+                serde_json::Value::String(password.to_string()),
+            );
+        }
+    }
+
+    // Locked settings (override-settings) that the end user cannot change.
+    let mut overrides = serde_json::Map::new();
+    // Never check for / pull upstream RustDesk updates.
+    overrides.insert(
+        "enable-check-update".to_string(),
+        serde_json::Value::String("N".to_string()),
+    );
+    // Hide advanced plumbing sections to keep the UI minimal. Security settings
+    // are intentionally left visible so a permanent password can still be set.
+    for hide_key in [
+        "hide-server-settings",
+        "hide-proxy-settings",
+        "hide-network-settings",
+        "hide-websocket-settings",
+        "hide-remote-printer-settings",
+    ] {
+        overrides.insert(
+            hide_key.to_string(),
+            serde_json::Value::String("Y".to_string()),
+        );
+    }
+    data.insert(
+        "override-settings".to_string(),
+        serde_json::Value::Object(overrides),
+    );
+
+    apply_custom_client_config(data);
 }
 
 #[inline]

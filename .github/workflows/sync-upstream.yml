@@ -1,0 +1,118 @@
+name: Sync upstream RustDesk
+
+# Merges a chosen upstream RustDesk release tag into our fork and opens a pull
+# request for review. Run it manually from the Actions tab whenever RustDesk
+# publishes a new release. It never pushes to the default branch directly — you
+# always review the merge in a PR before it lands.
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream RustDesk tag/branch to merge (e.g. 1.4.8)"
+        type: string
+        required: true
+        default: "1.4.8"
+      base_branch:
+        description: "Branch to merge into"
+        type: string
+        required: true
+        default: "master"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork (full history + submodules)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_branch }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Configure git identity
+        run: |
+          git config user.name "piomar-sync-bot"
+          git config user.email "kontakt@mikebravo.xyz"
+
+      - name: Add upstream and fetch tag
+        run: |
+          git remote add upstream https://github.com/rustdesk/rustdesk.git
+          git fetch upstream --tags --no-recurse-submodules "refs/tags/${{ inputs.upstream_ref }}:refs/tags/${{ inputs.upstream_ref }}" || \
+            git fetch upstream --no-recurse-submodules "${{ inputs.upstream_ref }}"
+
+      - name: Create sync branch and merge
+        id: merge
+        run: |
+          SYNC_BRANCH="sync/upstream-${{ inputs.upstream_ref }}-${{ github.run_number }}"
+          echo "sync_branch=$SYNC_BRANCH" >> "$GITHUB_OUTPUT"
+          git checkout -b "$SYNC_BRANCH"
+          if git merge --no-edit "${{ inputs.upstream_ref }}"; then
+            echo "merge_ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "merge_ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Merge has conflicts — resolve them locally (see job summary)."
+            git merge --abort
+          fi
+
+      - name: Update submodules to merged revision
+        if: steps.merge.outputs.merge_ok == 'true'
+        run: git submodule update --init --recursive
+
+      - name: Branding sanity check
+        if: steps.merge.outputs.merge_ok == 'true'
+        run: |
+          echo "### Branding check (leftover RustDesk.app references)" >> "$GITHUB_STEP_SUMMARY"
+          if grep -rn "RustDesk\.app" --include="*.sh" --include="*.yml" --include="*.py" . ; then
+            echo "::warning::Found 'RustDesk.app' references — upstream may have overwritten branding. Review before release."
+            grep -rn "RustDesk\.app" --include="*.sh" --include="*.yml" --include="*.py" . >> "$GITHUB_STEP_SUMMARY" || true
+          else
+            echo "No leftover 'RustDesk.app' references found." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Push sync branch
+        if: steps.merge.outputs.merge_ok == 'true'
+        run: git push -u origin "${{ steps.merge.outputs.sync_branch }}"
+
+      - name: Open pull request
+        if: steps.merge.outputs.merge_ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --base "${{ inputs.base_branch }}" \
+            --head "${{ steps.merge.outputs.sync_branch }}" \
+            --title "Sync upstream RustDesk ${{ inputs.upstream_ref }}" \
+            --body "Automated merge of upstream RustDesk \`${{ inputs.upstream_ref }}\` into \`${{ inputs.base_branch }}\`.
+
+          Before merging, verify:
+          - CI build passes for Windows and macOS.
+          - Branding (name/icons) survived the merge — see the \"Branding sanity check\" step.
+          - \`libs/hbb_common\` submodule pointer moved to the release revision.
+          - Server address, public key and preset-password injection still apply."
+
+      - name: Report merge conflict
+        if: steps.merge.outputs.merge_ok == 'false'
+        run: |
+          {
+            echo "### ❌ Merge conflict"
+            echo ""
+            echo "The automatic merge of \`${{ inputs.upstream_ref }}\` into \`${{ inputs.base_branch }}\` hit conflicts."
+            echo "Resolve locally:"
+            echo ""
+            echo '```bash'
+            echo "git fetch origin ${{ inputs.base_branch }}"
+            echo "git checkout ${{ inputs.base_branch }}"
+            echo "git remote add upstream https://github.com/rustdesk/rustdesk.git  # once"
+            echo "git fetch upstream --tags"
+            echo "git merge ${{ inputs.upstream_ref }}"
+            echo "# resolve conflicts, then:"
+            echo "git submodule update --init --recursive"
+            echo "git push"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1

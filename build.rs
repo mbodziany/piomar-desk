@@ -91,4 +91,7 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=ApplicationServices");
     }
     println!("cargo:rerun-if-changed=build.rs");
+    // Piomar Pomoc: the preset permanent password is baked in via option_env! at
+    // compile time, so rebuild the affected crate whenever its value changes.
+    println!("cargo:rerun-if-env-changed=PIOMAR_DEFAULT_PASSWORD");
 }
