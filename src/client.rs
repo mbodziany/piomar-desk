@@ -96,6 +96,8 @@ pub mod screenshot;
 
 pub const MILLI1: Duration = Duration::from_millis(1);
 pub const SEC30: Duration = Duration::from_secs(30);
+// Empirical restart reconnect grace window.
+const RESTART_REMOTE_DEVICE_GRACE: Duration = Duration::from_secs(5 * 60);
 pub const VIDEO_QUEUE_SIZE: usize = 120;
 const MAX_DECODE_FAIL_COUNTER: usize = 3;
 
@@ -1740,11 +1742,17 @@ pub struct LoginConfigHandler {
     features: Option<Features>,
     pub session_id: u64, // used for local <-> server communication
     pub supported_encoding: SupportedEncoding,
-    pub restarting_remote_device: bool,
+    restarting_remote_device: bool,
+    // Start time of the restart grace window. On Windows the peer may briefly
+    // reconnect before the real reboot disconnect.
+    restart_remote_device_at: Option<Instant>,
     pub force_relay: bool,
     pub direct: Option<bool>,
     pub received: bool,
     switch_uuid: Option<String>,
+    #[cfg(feature = "flutter")]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    switch_back_allowed: bool,
     pub save_ab_password_to_recent: bool, // true: connected with ab password
     pub other_server: Option<(String, String, String)>,
     pub custom_fps: Arc<Mutex<Option<usize>>>,
@@ -1846,7 +1854,7 @@ impl LoginConfigHandler {
         }
         self.session_id = sid;
         self.supported_encoding = Default::default();
-        self.restarting_remote_device = false;
+        self.clear_restarting_remote_device();
         self.force_relay =
             config::option2bool("force-always-relay", &self.get_option("force-always-relay"))
                 || force_relay
@@ -1861,6 +1869,11 @@ impl LoginConfigHandler {
 
         self.direct = None;
         self.received = false;
+        #[cfg(feature = "flutter")]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            self.switch_back_allowed = false;
+        }
         self.switch_uuid = switch_uuid;
         self.adapter_luid = adapter_luid;
         self.selected_windows_session_id = None;
@@ -1872,6 +1885,23 @@ impl LoginConfigHandler {
         let is_terminal_admin = conn_type == ConnType::TERMINAL
             && std::env::var("IS_TERMINAL_ADMIN").map_or(false, |v| v == "Y");
         self.is_terminal_admin = is_terminal_admin;
+    }
+
+    #[cfg(feature = "flutter")]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    pub fn allow_switch_back_once(&mut self) {
+        self.switch_back_allowed = true;
+    }
+
+    #[cfg(feature = "flutter")]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    pub fn consume_switch_back_permission(&mut self) -> bool {
+        if self.switch_back_allowed {
+            self.switch_back_allowed = false;
+            true
+        } else {
+            false
+        }
     }
 
     /// Check if the client should auto login.
@@ -2754,6 +2784,30 @@ impl LoginConfigHandler {
         msg_out
     }
 
+    pub fn mark_restarting_remote_device(&mut self) {
+        self.restarting_remote_device = true;
+        self.restart_remote_device_at = Some(Instant::now());
+    }
+
+    pub fn clear_restarting_remote_device(&mut self) {
+        self.restarting_remote_device = false;
+        self.restart_remote_device_at = None;
+    }
+
+    pub fn is_restarting_remote_device(&self) -> bool {
+        if !self.restarting_remote_device {
+            return false;
+        }
+        // Keep this flag alive for a short grace window instead of clearing it on
+        // connection_ready or the first peer bytes. During OS restart the peer can
+        // briefly reconnect before the real reboot disconnect, and clearing it too
+        // early would let the next disconnect escape the restart flow and fall back
+        // to the normal error dialog / manual reconnect path.
+        self.restart_remote_device_at
+            .map(|started_at| started_at.elapsed() < RESTART_REMOTE_DEVICE_GRACE)
+            .unwrap_or(false)
+    }
+
     pub fn get_conn_token(&self) -> Option<String> {
         if self.password.is_empty() {
             return None;
@@ -3377,6 +3431,36 @@ pub fn handle_login_error(
     }
 }
 
+#[cfg(feature = "flutter")]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+async fn consume_local_switch_sides_uuid(id: &str, uuid: &Uuid) -> bool {
+    let Ok(mut conn) = crate::ipc::connect(1000, "").await else {
+        return false;
+    };
+    let uuid = uuid.to_string();
+    if conn
+        .send(&crate::ipc::Data::SwitchSidesUuid(
+            uuid.clone(),
+            id.to_owned(),
+            None,
+        ))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    match conn.next_timeout(1000).await {
+        Ok(Some(crate::ipc::Data::SwitchSidesUuid(
+            returned_uuid,
+            returned_id,
+            Some(true),
+        ))) => {
+            returned_uuid == uuid && returned_id == id
+        }
+        _ => false,
+    }
+}
+
 /// Handle hash message sent by peer.
 /// Hash will be used for login.
 ///
@@ -3397,12 +3481,22 @@ pub async fn handle_hash(
     // Take care of password application order
 
     // switch_uuid
-    let uuid = lc.write().unwrap().switch_uuid.take();
-    if let Some(uuid) = uuid {
-        if let Ok(uuid) = uuid::Uuid::from_str(&uuid) {
-            send_switch_login_request(lc.clone(), peer, uuid).await;
-            lc.write().unwrap().password_source = Default::default();
-            return;
+    #[cfg(feature = "flutter")]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let uuid = lc.write().unwrap().switch_uuid.take();
+        if let Some(uuid) = uuid {
+            if let Ok(uuid) = uuid::Uuid::from_str(&uuid) {
+                let id = lc.read().unwrap().id.clone();
+                if !consume_local_switch_sides_uuid(&id, &uuid).await {
+                    log::warn!("Ignored untrusted switch_uuid");
+                } else {
+                    lc.write().unwrap().allow_switch_back_once();
+                    send_switch_login_request(lc.clone(), peer, uuid).await;
+                    lc.write().unwrap().password_source = Default::default();
+                    return;
+                }
+            }
         }
     }
     // last password
@@ -3653,9 +3747,18 @@ pub trait Interface: Send + Clone + 'static + Sized {
     fn on_establish_connection_error(&self, err: String) {
         let title = "Connection Error";
         let text = err.to_string();
-        let lc = self.get_lch();
-        let direct = lc.read().unwrap().direct;
-        let received = lc.read().unwrap().received;
+        let lch = self.get_lch();
+        let (is_restarting, direct, received) = {
+            let lc = lch.read().unwrap();
+            (lc.is_restarting_remote_device(), lc.direct, lc.received)
+        };
+        if is_restarting {
+            log::info!("Restart remote device, suppress connection error: {err}");
+            // Flutter treats this as a reconnect control event. The text is kept
+            // for legacy UI and existing translation reuse.
+            self.msgbox("restarting", "Restarting remote device", "Connection in progress. Please wait.", "");
+            return;
+        }
 
         let mut relay_hint = false;
         let mut relay_hint_type = "relay-hint";
@@ -3870,6 +3973,7 @@ pub fn check_if_retry(msgtype: &str, title: &str, text: &str, retry_for_relay: b
                 && !text.to_lowercase().contains("resolve")
                 && !text.to_lowercase().contains("mismatch")
                 && !text.to_lowercase().contains("manually")
+                && !text.to_lowercase().contains("restricted")
                 && !text.to_lowercase().contains("not allowed")))
 }
 

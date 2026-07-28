@@ -10,6 +10,10 @@ use crate::{
     common::get_default_sound_input,
     ui_session_interface::{InvokeUiSession, Session},
 };
+
+// Empirical no-data window before exposing the restart reconnect state to the UI.
+// Restart msgbox text is kept as a legacy UI fallback; Flutter handles the type as a control event.
+const RESTART_REMOTE_DEVICE_NO_DATA_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(feature = "unix-file-copy-paste")]
 use crate::{clipboard::try_empty_clipboard_files, clipboard_file::unix_file_clip};
 #[cfg(any(
@@ -153,7 +157,6 @@ impl<T: InvokeUiSession> Remote<T> {
             }
         };
 
-        let mut last_recv_time = Instant::now();
         let mut received = false;
         let conn_type = if self.handler.is_file_transfer() {
             ConnType::FILE_TRANSFER
@@ -219,6 +222,7 @@ impl<T: InvokeUiSession> Remote<T> {
                 let mut fps_instant = Instant::now();
 
                 let _keep_it = client::hc_connection(feedback, rendezvous_server, token).await;
+                let mut last_recv_time = Instant::now();
 
                 loop {
                     tokio::select! {
@@ -244,7 +248,7 @@ impl<T: InvokeUiSession> Remote<T> {
                             } else {
                                 if self.handler.is_restarting_remote_device() {
                                     log::info!("Restart remote device");
-                                    self.handler.msgbox("restarting", "Restarting remote device", "remote_restarting_tip", "");
+                                    self.handler.msgbox("restarting", "Restarting remote device", "Connection in progress. Please wait.", "");
                                 } else {
                                     log::info!("Reset by the peer");
                                     self.handler.msgbox("error", "Connection Error", "Reset by the peer", "");
@@ -279,6 +283,12 @@ impl<T: InvokeUiSession> Remote<T> {
                             }
                         }
                         _ = status_timer.tick() => {
+                            if self.handler.is_restarting_remote_device()
+                                && last_recv_time.elapsed() >= RESTART_REMOTE_DEVICE_NO_DATA_TIMEOUT
+                            {
+                                self.handler.msgbox("restarting-show", "Restarting remote device", "Connection in progress. Please wait.", "");
+                                break;
+                            }
                             let elapsed = fps_instant.elapsed().as_millis();
                             if elapsed < 1000 {
                                 continue;
@@ -1426,7 +1436,11 @@ impl<T: InvokeUiSession> Remote<T> {
                     self.handler.set_cursor_position(cp);
                 }
                 Some(message::Union::Clipboard(cb)) => {
-                    if !self.handler.lc.read().unwrap().disable_clipboard.v {
+                    let clipboard_allowed = {
+                        let lc = self.handler.lc.read().unwrap();
+                        !lc.disable_clipboard.v && !lc.view_only.v
+                    };
+                    if clipboard_allowed {
                         #[cfg(not(any(target_os = "android", target_os = "ios")))]
                         update_clipboard(vec![cb], ClipboardSide::Client);
                         #[cfg(target_os = "ios")]
@@ -1445,9 +1459,30 @@ impl<T: InvokeUiSession> Remote<T> {
                     }
                 }
                 Some(message::Union::MultiClipboards(_mcb)) => {
-                    if !self.handler.lc.read().unwrap().disable_clipboard.v {
+                    let clipboard_allowed = {
+                        let lc = self.handler.lc.read().unwrap();
+                        !lc.disable_clipboard.v && !lc.view_only.v
+                    };
+                    if clipboard_allowed {
                         #[cfg(not(any(target_os = "android", target_os = "ios")))]
                         update_clipboard(_mcb.clipboards, ClipboardSide::Client);
+                        #[cfg(target_os = "ios")]
+                        {
+                            if let Some(cb) = _mcb
+                                .clipboards
+                                .iter()
+                                .find(|c| c.format.enum_value() == Ok(ClipboardFormat::Text))
+                            {
+                                let content = if cb.compress {
+                                    hbb_common::compress::decompress(&cb.content)
+                                } else {
+                                    cb.content.to_vec()
+                                };
+                                if let Ok(content) = String::from_utf8(content) {
+                                    self.handler.clipboard(content);
+                                }
+                            }
+                        }
                         #[cfg(target_os = "android")]
                         crate::clipboard::handle_msg_multi_clipboards(_mcb);
                     }
@@ -1780,6 +1815,9 @@ impl<T: InvokeUiSession> Remote<T> {
                             Ok(Permission::BlockInput) => {
                                 self.handler.set_permission("block_input", p.enabled);
                             }
+                            Ok(Permission::PrivacyMode) => {
+                                self.handler.set_permission("privacy_mode", p.enabled);
+                            }
                             _ => {}
                         }
                     }
@@ -1903,9 +1941,23 @@ impl<T: InvokeUiSession> Remote<T> {
                             );
                         }
                     }
+                    #[cfg(feature = "flutter")]
+                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
                     Some(misc::Union::SwitchBack(_)) => {
-                        #[cfg(feature = "flutter")]
-                        self.handler.switch_back(&self.handler.get_id());
+                        let allow_switch_back = self
+                            .handler
+                            .lc
+                            .write()
+                            .unwrap()
+                            .consume_switch_back_permission();
+                        if allow_switch_back {
+                            self.handler.switch_back(&self.handler.get_id());
+                        } else {
+                            log::warn!(
+                                "Ignored unsolicited SwitchBack from {}",
+                                self.handler.get_id()
+                            );
+                        }
                     }
                     #[cfg(all(feature = "flutter", feature = "plugin_framework"))]
                     #[cfg(not(any(target_os = "android", target_os = "ios")))]

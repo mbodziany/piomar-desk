@@ -407,6 +407,7 @@ class _GeneralState extends State<_General> {
   final RxBool serviceStop =
       isWeb ? RxBool(false) : Get.find<RxBool>(tag: 'stop-service');
   RxBool serviceBtnEnabled = true.obs;
+  final GlobalKey _minToolbarOptionKey = GlobalKey();
 
   @override
   Widget build(BuildContext context) {
@@ -488,6 +489,16 @@ class _GeneralState extends State<_General> {
         _OptionCheckBox(context, 'Confirm before closing multiple tabs',
             kOptionEnableConfirmClosingTabs,
             isServer: false),
+      if (!bind.isIncomingOnly())
+        _OptionCheckBox(
+          context,
+          'allow-remote-toolbar-docking-any-edge',
+          kOptionAllowMultiEdgeToolbarDock,
+          isServer: false,
+          update: (_) {
+            reloadAllWindows();
+          },
+        ),
       _OptionCheckBox(context, 'Adaptive bitrate', kOptionEnableAbr),
       if (!isWeb) wallpaper(),
       if (!isWeb && !bind.isIncomingOnly()) ...[
@@ -593,6 +604,47 @@ class _GeneralState extends State<_General> {
           }
           await mainSetLocalBoolOption(key, value);
         },
+      ));
+    }
+    children.add(_OptionCheckBox(
+      context,
+      'Show monitor switch button on the main toolbar',
+      kOptionAllowMonitorSwitchMainToolbar,
+      isServer: false,
+      update: (enabled) async {
+        if (!enabled) {
+          await mainSetLocalBoolOption(
+              kOptionAllowMonitorSwitchMinToolbar, false);
+        }
+        if (mounted) setState(() {});
+        reloadAllWindows();
+        if (enabled) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            final ctx = _minToolbarOptionKey.currentContext;
+            if (ctx != null) {
+              Scrollable.ensureVisible(
+                ctx,
+                alignment: 0.5,
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.easeInOut,
+              );
+            }
+          });
+        }
+      },
+    ));
+    if (mainGetLocalBoolOptionSync(kOptionAllowMonitorSwitchMainToolbar)) {
+      children.add(KeyedSubtree(
+        key: _minToolbarOptionKey,
+        child: _OptionCheckBox(
+          context,
+          'Show on the minimized toolbar',
+          kOptionAllowMonitorSwitchMinToolbar,
+          isServer: false,
+          update: (_) {
+            reloadAllWindows();
+          },
+        ).marginOnly(left: _kCheckBoxLeftMargin * 3),
       ));
     }
     return _Card(title: 'Other', children: children);
@@ -1061,6 +1113,10 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
             if (isWindows)
               _OptionCheckBox(context, 'Enable blocking user input',
                   kOptionEnableBlockInput,
+                  enabled: enabled, fakeValue: fakeValue),
+            if (bind.mainSupportedPrivacyModeImpls() != '[]')
+              _OptionCheckBox(
+                  context, 'Enable privacy mode', kOptionEnablePrivacyMode,
                   enabled: enabled, fakeValue: fakeValue),
             _OptionCheckBox(context, 'Enable remote configuration modification',
                 kOptionAllowRemoteConfigModification,
