@@ -2958,7 +2958,10 @@ int versionCmp(String v1, String v2) {
 }
 
 String getWindowName({WindowType? overrideType}) {
-  final name = bind.mainGetAppNameSync();
+  // Piomar Pomoc: displayed window title. Decoupled from the internal app name
+  // (bind.mainGetAppNameSync()) on purpose — the internal name still drives the
+  // config folder / peer IDs, which must stay stable across endpoints.
+  const name = "Piomar Pomoc";
   switch (overrideType ?? kWindowType) {
     case WindowType.Main:
       return name;
