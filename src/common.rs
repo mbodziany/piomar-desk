@@ -2304,6 +2304,8 @@ pub fn apply_piomar_builtin_config() {
         "hide-network-settings",
         "hide-websocket-settings",
         "hide-remote-printer-settings",
+        // Remove the "powered by RustDesk" link from the home screen (branding).
+        "hide-powered-by-me",
     ] {
         overrides.insert(
             hide_key.to_string(),
